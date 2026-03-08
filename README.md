@@ -982,4 +982,4 @@ An intermediate de-standardization step is needed. Let:
 ### Appendix B - AR Inference with SEP-LSTM: External Iterative Feedback Loop 
 Deriving a new NDA prefix event token, based on the next event and timestamp prediction, is done highly similar to the [way in which new suffix event tokens are derived](#appendix-a---auto-regressive-ar-inference-with-sutran). However, since the SEP-LSTM does not contain an AR decoder and hence does not utilize suffix event tokens, the training means and standard deviations of the two time proxies used for de- and re-standardization, should be the ones of the time proxies in the prefix event tokens, and not of the suffix event tokens. The mean and standard deviation of the timestamp ***targets*** can still be used. 
 
-After each prediction, the newly derived prefix event token is added to the current sequence of NDA prefix event tokens, and represented to the model as if it was a new instance.
+After each prediction, the newly derived prefix event token is added to the current sequence of NDA prefix event tokens, and represented to the model as if it was a new instance. 

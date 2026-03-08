@@ -1,0 +1,30 @@
+# CSV files (too large for git)
+*.csv
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch models and data
+*.pt
+*.pth
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -4,13 +4,13 @@ from SuTraN.layers import MultiHeadAttention, PositionWiseFeedForward, MultiHead
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, dropout):
+    def __init__(self, d_model, num_heads, d_ff, dropout, activation="relu"):
         super(DecoderLayer, self).__init__()
         
         self.self_attn = MultiHeadSelfAttentionDecoder(d_model, num_heads)
 
         self.cross_attn = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward = PositionWiseFeedForward(d_model, d_ff)
+        self.feed_forward = PositionWiseFeedForward(d_model, d_ff, activation)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)

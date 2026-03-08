@@ -9,10 +9,10 @@ from SuTraN.layers import MultiHeadAttention, PositionWiseFeedForward
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model, num_heads, d_ff, dropout):
+    def __init__(self, d_model, num_heads, d_ff, dropout, activation="relu"):
         super(EncoderLayer, self).__init__()
         self.self_attn = MultiHeadAttention(d_model, num_heads)
-        self.feed_forward = PositionWiseFeedForward(d_model, d_ff)
+        self.feed_forward = PositionWiseFeedForward(d_model, d_ff, activation)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)

@@ -78,6 +78,7 @@ class SuTraN(nn.Module):
                  remaining_runtime_head = True, 
                  layernorm_embeds = True, 
                  outcome_bool = False,
+                 activation = "relu",
                  ):
         """Initialize an instance of SuTraN. The learned 
         activity embedding weight matrix is shared between the encoder 
@@ -180,6 +181,7 @@ class SuTraN(nn.Module):
         self.remaining_runtime_head = remaining_runtime_head
         self.layernorm_embeds = layernorm_embeds
         self.outcome_bool = outcome_bool
+        self.activation = activation
 
         # Initialize positional encoding layer 
         self.positional_encoding = PositionalEncoding(d_model)
@@ -209,9 +211,9 @@ class SuTraN(nn.Module):
         self.input_embeddings_decoder = nn.Linear(self.dim_init_suffix, self.d_model)
 
         # Initializing the num_prefix_encoder_layers encoder layers 
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_prefix_encoder_layers)])
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
         # Initializing the num_decoder_layers decoder layers 
-        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)
@@ -558,6 +560,7 @@ class SuTraN_no_context(nn.Module):
                  remaining_runtime_head = True, 
                  layernorm_embeds = True, 
                  outcome_bool = False,
+                 activation = "relu",
                  ):
         """Initialize an instance of SuTraN. The learned 
         activity embedding weight matrix is shared between the encoder 
@@ -615,6 +618,9 @@ class SuTraN_no_context(nn.Module):
             procedure, as well as with the preprocessing pipeline that 
             produces the labels. See Notes for further remarks 
             regarding the `outcome_bool` parameter. 
+        activation : str, optional
+            Activation function for the feed-forward sublayers. One of 
+            ``"relu"``, ``"gelu"``, or ``"silu"``. By default ``"relu"``.
 
         Notes
         -----
@@ -642,6 +648,7 @@ class SuTraN_no_context(nn.Module):
         self.remaining_runtime_head = remaining_runtime_head
         self.layernorm_embeds = layernorm_embeds
         self.outcome_bool = outcome_bool
+        self.activation = activation
 
         # Initialize positional encoding layer 
         self.positional_encoding = PositionalEncoding(d_model)
@@ -669,9 +676,9 @@ class SuTraN_no_context(nn.Module):
         self.input_embeddings_decoder = nn.Linear(self.dim_init_suffix, self.d_model)
 
         # Initializing the num_prefix_encoder_layers encoder layers 
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_prefix_encoder_layers)])
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
         # Initializing the num_decoder_layers decoder layers 
-        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)

@@ -10,11 +10,11 @@ import torch.nn as nn
 #####################################
 
 class MaskedCrossEntropyLoss(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, label_smoothing=0.0):
         super(MaskedCrossEntropyLoss, self).__init__()
         # Number of activity output neurons. Includes padding token and end_token.
         self.num_classes = num_classes
-        self.cross_entropy_crit = nn.CrossEntropyLoss(ignore_index = 0)
+        self.cross_entropy_crit = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=label_smoothing)
         
     def forward(self, inputs, targets):
         """Compute the CrossEntropyLoss of the next activity prediction 
@@ -139,7 +139,7 @@ class RemainingRunTimeMAELoss(nn.Module):
 # Number 4: default (only activity and timestamp suffix prediction)
 
 class MultiOutputLoss_1(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, weights=(1.0, 1.0, 1.0), label_smoothing=0.0):
         """Composite loss function for the following three jointly 
         learned prediction tasks: 
 
@@ -154,11 +154,24 @@ class MultiOutputLoss_1(nn.Module):
         num_classes : int
             Number of output neurons (including padding and end tokens) 
             in the output layer of the activity suffix prediction task. 
+        weights : tuple of float, optional
+            (w_ce, w_ttne, w_rrt) — multipliers for each loss component 
+            in the composite gradient-tracked loss. Defaults to 
+            (1.0, 1.0, 1.0) (equal weighting, same as original paper). 
+            The individual component losses returned for tracking are 
+            always unweighted.
+        label_smoothing : float, optional
+            Label smoothing factor for the CE activity loss. 0.0 means
+            hard one-hot targets (default). Passed through to
+            ``MaskedCrossEntropyLoss`` → ``nn.CrossEntropyLoss``.
         """
         super(MultiOutputLoss_1, self).__init__()
-        self.cat_loss_fn = MaskedCrossEntropyLoss(num_classes)
+        self.cat_loss_fn = MaskedCrossEntropyLoss(num_classes, label_smoothing=label_smoothing)
         self.cont_loss_fn_ttne = MaskedMeanAbsoluteErrorLoss()
         self.cont_loss_fn_rrt = RemainingRunTimeMAELoss()
+        self.w_ce = weights[0]
+        self.w_ttne = weights[1]
+        self.w_rrt = weights[2]
 
     # def forward(self, cat_output, ttne_output, rrt_output, cat_target, ttne_target, rrt_target):
     def forward(self, outputs, labels):
@@ -206,9 +219,10 @@ class MultiOutputLoss_1(nn.Module):
         cont_loss2 = self.cont_loss_fn_rrt(outputs[2], labels[1])
 
         # Composite loss (used for gradient updates)
-        loss = cat_loss + cont_loss1 + cont_loss2
+        loss = self.w_ce * cat_loss + self.w_ttne * cont_loss1 + self.w_rrt * cont_loss2
 
         # Composite loss, act suffix loss, ttne loss, rrt loss
+        # NOTE: component values are always UNWEIGHTED for fair tracking
         return loss, cat_loss.item(), cont_loss1.item(), cont_loss2.item()
 
 # Number 1: default + rrt prediction
@@ -452,7 +466,7 @@ class MultiOutputLoss_4(nn.Module):
 #####################################
 
 class MultiOutputLoss(nn.Module):
-    def __init__(self, num_classes, remaining_runtime_head, outcome_bool):
+    def __init__(self, num_classes, remaining_runtime_head, outcome_bool, weights=(1.0, 1.0, 1.0), label_smoothing=0.0):
         """The all-encompassing loss function, catering to all possible 
         permutations of jointly learned prediction tasks. 
 
@@ -490,6 +504,14 @@ class MultiOutputLoss(nn.Module):
         outcome_bool : bool 
             Whether or not the model is also trained to jointly predict 
             the binary outcome (given a prefix).
+        weights : tuple of float, optional
+            (w_ce, w_ttne, w_rrt) — multipliers for each loss component.
+            Defaults to (1.0, 1.0, 1.0). Only applied to 
+            MultiOutputLoss_1 (rrt-only variant) for now.
+        label_smoothing : float, optional
+            Label smoothing factor for the CE activity loss. 0.0 means 
+            hard targets (default). Only applied to MultiOutputLoss_1 
+            for now.
         """
         super(MultiOutputLoss, self).__init__()
         # Creating auxiliary bools 
@@ -499,7 +521,7 @@ class MultiOutputLoss(nn.Module):
         both = outcome_bool & remaining_runtime_head
 
         if only_rrt:
-            self.composite_loss = MultiOutputLoss_1(num_classes=num_classes)
+            self.composite_loss = MultiOutputLoss_1(num_classes=num_classes, weights=weights, label_smoothing=label_smoothing)
 
         elif only_out:
             self.composite_loss = MultiOutputLoss_2(num_classes=num_classes)

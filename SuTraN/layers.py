@@ -194,11 +194,14 @@ class MultiHeadSelfAttentionDecoder(nn.Module):
     
 
 class PositionWiseFeedForward(nn.Module):
-    def __init__(self, d_model, d_ff):
+    def __init__(self, d_model, d_ff, activation="relu"):
         super(PositionWiseFeedForward, self).__init__()
         self.fc1 = nn.Linear(d_model, d_ff)
         self.fc2 = nn.Linear(d_ff, d_model)
-        self.relu = nn.ReLU()
+        # Configurable activation: "relu" (default/original), "gelu", or "silu".
+        # Default matches the original code so existing usage is unaffected.
+        act_fns = {"relu": nn.ReLU(), "gelu": nn.GELU(), "silu": nn.SiLU()}
+        self.activation = act_fns[activation]
 
     def forward(self, x):
-        return self.fc2(self.relu(self.fc1(x))) # (batch_size, window_size, d_model)
+        return self.fc2(self.activation(self.fc1(x))) # (batch_size, window_size, d_model)

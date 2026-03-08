@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 
 from SuTraN.transformer_prefix_encoder import EncoderLayer
-from SuTraN.transformer_suffix_decoder import DecoderLayer
+from SuTraN.transformer_suffix_decoder import DecoderLayer, DecoderLayerCached
 
 # Device Setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -212,8 +212,10 @@ class SuTraN(nn.Module):
 
         # Initializing the num_prefix_encoder_layers encoder layers 
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
-        # Initializing the num_decoder_layers decoder layers 
+        # Initializing the num_decoder_layers decoder layers (for training with teacher forcing)
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        # Initializing cached decoder layers for fast autoregressive inference
+        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)
@@ -244,7 +246,40 @@ class SuTraN(nn.Module):
         self.only_out = self.outcome_bool & (not self.remaining_runtime_head)
         self.both_not = (not self.outcome_bool) & (not self.remaining_runtime_head)
         self.both = self.outcome_bool & self.remaining_runtime_head
-    
+
+        # Tie weights between decoder_layers and decoder_layers_cached
+        # so training updates one set of parameters and inference reads
+        # them through the cached wrappers.
+        self._tie_cached_decoder_weights()
+
+    def _tie_cached_decoder_weights(self):
+        """Tie the weights of cached decoder layers to the original
+        decoder layers. Both share the same nn.Linear / LayerNorm
+        modules, so any gradient update to the originals is
+        automatically visible to the cached layers."""
+        for i in range(len(self.decoder_layers)):
+            orig = self.decoder_layers[i]
+            cached = self.decoder_layers_cached[i]
+
+            # Self-attention
+            cached.self_attn.W_q = orig.self_attn.W_q
+            cached.self_attn.W_k = orig.self_attn.W_k
+            cached.self_attn.W_v = orig.self_attn.W_v
+            cached.self_attn.W_o = orig.self_attn.W_o
+
+            # Cross-attention
+            cached.cross_attn.W_q = orig.cross_attn.W_q
+            cached.cross_attn.W_k = orig.cross_attn.W_k
+            cached.cross_attn.W_v = orig.cross_attn.W_v
+            cached.cross_attn.W_o = orig.cross_attn.W_o
+
+            # Feed-forward (shares activation too)
+            cached.feed_forward = orig.feed_forward
+
+            # Layer norms
+            cached.norm1 = orig.norm1
+            cached.norm2 = orig.norm2
+            cached.norm3 = orig.norm3
 
 
     # window_size : number of decoding steps during inference (model.eval())
@@ -382,165 +417,111 @@ class SuTraN(nn.Module):
                 return act_probs, ttne_pred
                 # (batch_size, window_size, self.num_activities), (batch_size, window_size, 1)
 
-        else: # Inference mode greedy decoding activities 
-            # NOTE: Considerations for future work, in which you adopt 
-            # similar procedure during training for rescheduled sampling: 
-            # Pay attention to gradient tracking, whether you should detach 
-            # the next decoder suffix event token's derived features based 
-            # on predictions current decoding step. Figure out whether 
-            # the operations involved still maintain differentiability wrt 
-            # predictions used for deriving new features. 
-
-            # Retrieving suffix activity integer vector `act_inputs`.
-            #   `act_inputs` still contains the ground truth activity 
-            #   labels (shifted by 1) for the entire suffixes. However, 
-            #   at each decoding step `dec_step`, we will only predict 
-            #   based on the shifed suffix generated up till that point, 
-            #   and use those predictions to update the activity labels  
-            #   for the subsequent decoding step. Finally, the look-ahead  
-            #   mask ensures that the decoder cannot incorporate any 
-            #   information regarding ground-truth activity labels in the 
-            #   suffix.
-            #   NOTE: the same holds for the two time features of the 
-            #   suffix event tokens (`num_ftrs_suf`).
+        else: # Inference mode: greedy decoding with KV-caching
+            # Instead of re-embedding and re-decoding the full sequence
+            # at every step, we process one token at a time and cache
+            # the K/V projections. This reduces decoder complexity from
+            # O(W^2 * L) to O(W * L) per sequence.
 
             act_inputs = inputs[idx] # (B, W)
 
             batch_size = act_inputs.size(0) # B
 
-            # Initializing zero filled tensors for storing the activity 
-            # and timestamp predictions during decoding 
-            suffix_acts_decoded = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.int64).to(device) # (B, W)
-            suffix_ttne_preds = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.float32).to(device) # (B, W)
+            # Output tensors
+            suffix_acts_decoded = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.int64).to(device)
+            suffix_ttne_preds = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.float32).to(device)
+
+            # Initialize KV caches (one per decoder layer)
+            num_layers = len(self.decoder_layers_cached)
+            self_attn_caches_k = [None] * num_layers
+            self_attn_caches_v = [None] * num_layers
+            cross_attn_caches_k = [None] * num_layers
+            cross_attn_caches_v = [None] * num_layers
+
+            # Start with the first suffix token
+            current_act = act_inputs[:, 0:1]           # (B, 1)
+            current_time_ftrs = num_ftrs_suf[:, 0:1, :]  # (B, 1, 2)
 
             for dec_step in range(0, window_size):
-                # Leveraging learned embedding 
-                cat_emb_suf = self.act_emb(act_inputs) # (B, W, self.activity_emb_size)
+                # Embed only the current token
+                cat_emb_suf = self.act_emb(current_act)  # (B, 1, activity_emb_size)
+                target_in = torch.cat((cat_emb_suf, current_time_ftrs), dim=-1)  # (B, 1, dim_init_suffix)
 
-                # Concatenating both
-                target_in = torch.cat((cat_emb_suf, num_ftrs_suf), dim = -1) # (B, W, dim_init_suffix)
+                # Project + positional encoding for this step only
+                target_in = self.input_embeddings_decoder(target_in) * math.sqrt(self.d_model)
+                target_in = target_in + self.positional_encoding.pe[dec_step:dec_step+1, :]
+                target_in = self.positional_encoding.dropout(target_in)
 
-                # Initial embeddings decoder suffix event tokens 
-                target_in = self.positional_encoding(self.input_embeddings_decoder(target_in) * math.sqrt(self.d_model)) # (B, W, d_model)
-
-                # Applying layernorm if specified 
                 if self.layernorm_embeds:
-                    target_in = self.norm_dec_embeds(target_in) # (B, W, d_model)
+                    target_in = self.norm_dec_embeds(target_in)
 
-                # Activating the decoder
+                # Pass through cached decoder layers
                 dec_output = target_in
-                for dec_layer in self.decoder_layers:
-                    dec_output = dec_layer(dec_output, x, padding_mask_input) # (batch_size, window_size)
+                for layer_idx, dec_layer in enumerate(self.decoder_layers_cached):
+                    dec_output, new_self_k, new_self_v, cross_k, cross_v = dec_layer(
+                        dec_output,
+                        x,  # encoder output
+                        padding_mask_input,
+                        self_attn_cache_k=self_attn_caches_k[layer_idx],
+                        self_attn_cache_v=self_attn_caches_v[layer_idx],
+                        cross_attn_cache_k=cross_attn_caches_k[layer_idx],
+                        cross_attn_cache_v=cross_attn_caches_v[layer_idx],
+                    )
+                    self_attn_caches_k[layer_idx] = new_self_k
+                    self_attn_caches_v[layer_idx] = new_self_v
+                    cross_attn_caches_k[layer_idx] = cross_k
+                    cross_attn_caches_v[layer_idx] = cross_v
 
-                # Next activity prediction head: 
-                act_logits = self.fc_out_act(dec_output) # (B, W, self.num_activities)
+                # dec_output: (B, 1, d_model)
 
-                # Time till next event prediction (ttne) head:
-                ttne_pred = self.fc_out_ttne(dec_output) # (B, W, 1)
+                # Activity prediction
+                act_logits = self.fc_out_act(dec_output)  # (B, 1, num_activities)
+                act_outputs = act_logits[:, 0, :]  # (B, num_activities)
 
-                #   Selecting predictions for current decoding step
-                act_outputs = act_logits[:, dec_step, :] # (B, C)
-                ttne_outputs = ttne_pred[:, dec_step, 0] # (B, )
+                # TTNE prediction
+                ttne_pred = self.fc_out_ttne(dec_output)  # (B, 1, 1)
+                ttne_outputs = ttne_pred[:, 0, 0]  # (B,)
+                suffix_ttne_preds[:, dec_step] = ttne_outputs
 
-                # Adding time pred as-is 
-                suffix_ttne_preds[:, dec_step] = ttne_outputs # (B, W)
-
-
-                # Remaining Runtime Predictions and optional outcome 
-                # prediction only performed at the very first decoding 
-                # step 
+                # RRT / outcome only at first decoding step
                 if dec_step == 0:
                     if self.remaining_runtime_head:
-                        rrt_pred = self.fc_out_rrt(dec_output) # (B, W, 1)
-                        # Slicing out first decoding step prediction only
-                        rrt_pred = rrt_pred[:, 0, 0] # (B,)
-
+                        rrt_pred = self.fc_out_rrt(dec_output)[:, 0, 0]  # (B,)
                     if self.outcome_bool:
-                        out_pred = self.fc_out_out(dec_output) # (B, W, 1)
-                        out_pred = self.sigmoid_out(out_pred) # (B, W, 1)
-                        # Slicing out first decoding step prediction only
-                        out_pred = out_pred[:, 0, 0] # (batch_size, )
+                        out_pred = self.sigmoid_out(self.fc_out_out(dec_output))[:, 0, 0]  # (B,)
 
-                # Decoding activity preditions (greedily)
-                #   "Masking padding token"
+                # Greedy decode — mask padding token
                 act_outputs[:, 0] = -1e9
-
-                #   Greedy selection 
-                act_selected = torch.argmax(act_outputs, dim=-1) # (batch_size,), torch.int64
-
-                #   Adding selected activity integers to suffix_acts_decoded
+                act_selected = torch.argmax(act_outputs, dim=-1)  # (B,)
                 suffix_acts_decoded[:, dec_step] = act_selected
 
-                if dec_step < (window_size-1):
+                if dec_step < (window_size - 1):
+                    # Prepare next token
+                    act_suf_updates = torch.clamp(act_selected, max=self.num_activities - 2)
+                    current_act = act_suf_updates.unsqueeze(1)  # (B, 1)
 
-                    # Deriving activity indices pertaining to the 
-                    # selected activities for the derived next suffix 
-                    # event to be fed to the decoder in the next decoding 
-                    # step. 
-                    act_suf_updates = act_selected.clone() # (batch_size, )
-
-                    #   There is no artificially added END token present in the 
-                    #   suffix activity representations, and hence there is no 
-                    #   end token index in the suffix activity representations 
-                    #   on index num_activities-1. Therefore, we clamp 
-                    #   it on num_activities-2. Predictions for already finished 
-                    #   instances will not be taken into account at the end. 
-                    act_suf_updates = torch.clamp(act_suf_updates, max=self.num_activities-2) # (batch_size,) aka (B,)
-
-                    # Updating `act_inputs` for suffix decoder for next decoding step 
-
-                    act_inputs[:, dec_step+1] = act_suf_updates # (B, W)
-
-                    # Deriving TSS and TSP time features for next decoding 
-                    # step based on the TTNE predictions 
-
-                    #   Converting predictions standardized TTNE 
-                    #   back to original scale (seconds)
-                    time_preds_seconds = ttne_outputs*mean_std_ttne[1] + mean_std_ttne[0] # (batch_size,)
-
-                    #   Truncating at zero (no negatives allowed)
+                    # Derive next time features from TTNE prediction
+                    time_preds_seconds = ttne_outputs * mean_std_ttne[1] + mean_std_ttne[0]
                     time_preds_seconds = torch.clamp(time_preds_seconds, min=0)
 
-                    #   Converting standardized TSS feature current decoding 
-                    #   step's suffix event token to original scale (seconds) 
-                    tss_stand = num_ftrs_suf[:, dec_step, 0].clone() # (batch_size,)
-                    tss_seconds = tss_stand*mean_std_tss[1] + mean_std_tss[0] # (batch_size,)
-
-                    #   Clamping at zero again 
+                    tss_stand = current_time_ftrs[:, 0, 0]
+                    tss_seconds = tss_stand * mean_std_tss[1] + mean_std_tss[0]
                     tss_seconds = torch.clamp(tss_seconds, min=0)
 
-                    #   Updating tss in seconds next decoding step based on 
-                    #   converted TTNE predictions 
-                    tss_seconds_new = tss_seconds + time_preds_seconds # (batch_size,)
+                    tss_seconds_new = tss_seconds + time_preds_seconds
+                    tss_stand_new = (tss_seconds_new - mean_std_tss[0]) / mean_std_tss[1]
+                    tsp_stand_new = (time_preds_seconds - mean_std_tsp[0]) / mean_std_tsp[1]
 
-                    #   Converting back to preprocessed scale based on 
-                    #   training mean and std
-                    tss_stand_new = (tss_seconds_new - mean_std_tss[0]) / mean_std_tss[1] # (batch_size,)
+                    current_time_ftrs = torch.stack([tss_stand_new, tsp_stand_new], dim=-1).unsqueeze(1)  # (B, 1, 2)
 
-                    #   TSP: time since previous event next decoding step 
-                    #   is equal to the ttne in seconds, standardized with 
-                    #   the training mean and std of the Suffix TSP feature 
-                    tsp_stand_new = (time_preds_seconds - mean_std_tsp[0]) / mean_std_tsp[1] # (batch_size,)
-
-
-                    #   Concatenating both 
-                    new_suffix_timefeats = torch.cat((tss_stand_new.unsqueeze(-1), tsp_stand_new.unsqueeze(-1)), dim=-1) # (B, 2)
-                    #   Updating next decoding step's time feature
-                    #   tensor for the suffix event tokens 
-                    num_ftrs_suf[:, dec_step+1, :] = new_suffix_timefeats # (B, W, 2)
-            
             if self.only_rrt:
                 return suffix_acts_decoded, suffix_ttne_preds, rrt_pred
-                # (B, W), (B, W) and (B,)
             elif self.only_out:
                 return suffix_acts_decoded, suffix_ttne_preds, out_pred
-                # (B, W), (B, W) and (B, )
             elif self.both:
                 return suffix_acts_decoded, suffix_ttne_preds, rrt_pred, out_pred
-                # (B, W), (B, W), (B,) and (B, )
             else:
                 return suffix_acts_decoded, suffix_ttne_preds
-                # (B, W), (B, W)
 
 
 
@@ -677,8 +658,10 @@ class SuTraN_no_context(nn.Module):
 
         # Initializing the num_prefix_encoder_layers encoder layers 
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
-        # Initializing the num_decoder_layers decoder layers 
+        # Initializing the num_decoder_layers decoder layers (for training with teacher forcing)
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        # Initializing cached decoder layers for fast autoregressive inference
+        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)
@@ -709,6 +692,41 @@ class SuTraN_no_context(nn.Module):
         self.only_out = self.outcome_bool & (not self.remaining_runtime_head)
         self.both_not = (not self.outcome_bool) & (not self.remaining_runtime_head)
         self.both = self.outcome_bool & self.remaining_runtime_head
+
+        # Tie the cached decoder layer weights to the original decoder
+        # layer weights so that training updates are automatically
+        # reflected in the cached inference path.
+        self._tie_cached_decoder_weights()
+
+    def _tie_cached_decoder_weights(self):
+        """Share weight tensors between ``decoder_layers`` (used during
+        teacher-forced training) and ``decoder_layers_cached`` (used
+        during autoregressive inference with KV-caching).
+
+        This is called once at the end of ``__init__``. Because only
+        references are stored, any gradient update to the training
+        layers automatically applies to the cached layers as well.
+        """
+        for orig, cached in zip(self.decoder_layers, self.decoder_layers_cached):
+            # ---------- self-attention ----------
+            cached.self_attn.W_q = orig.self_attn.W_q
+            cached.self_attn.W_k = orig.self_attn.W_k
+            cached.self_attn.W_v = orig.self_attn.W_v
+            cached.self_attn.W_o = orig.self_attn.W_o
+
+            # ---------- cross-attention ----------
+            cached.cross_attn.W_q = orig.cross_attn.W_q
+            cached.cross_attn.W_k = orig.cross_attn.W_k
+            cached.cross_attn.W_v = orig.cross_attn.W_v
+            cached.cross_attn.W_o = orig.cross_attn.W_o
+
+            # ---------- feed-forward (share entire sub-module) ----------
+            cached.feed_forward = orig.feed_forward
+
+            # ---------- layer norms ----------
+            cached.norm1 = orig.norm1
+            cached.norm2 = orig.norm2
+            cached.norm3 = orig.norm3
 
 
     # window_size : number of decoding steps during inference (model.eval())
@@ -839,157 +857,108 @@ class SuTraN_no_context(nn.Module):
                 return act_probs, ttne_pred
                 # (batch_size, window_size, self.num_activities), (batch_size, window_size, 1)
 
-        else: # Inference mode greedy decoding activities 
-
-            # Retrieving suffix activity integer vector `act_inputs`.
-            #   `act_inputs` still contains the ground truth activity 
-            #   labels (shifted by 1) for the entire suffixes. However, 
-            #   at each decoding step `dec_step`, we will only predict 
-            #   based on the shifed suffix generated up till that point, 
-            #   and use those predictions to update the activity labels  
-            #   for the subsequent decoding step. Finally, the look-ahead  
-            #   mask ensures that the decoder cannot incorporate any 
-            #   information regarding ground-truth activity labels in the 
-            #   suffix.
-            #   NOTE: the same holds for the two time features of the 
-            #   suffix event tokens (`num_ftrs_suf`).
+        else: # Inference mode: greedy decoding with KV-caching
+            # Instead of re-embedding and re-decoding the full sequence
+            # at every step, we process one token at a time and cache
+            # the K/V projections. This reduces decoder complexity from
+            # O(W^2 * L) to O(W * L) per sequence.
 
             act_inputs = inputs[3] # (B, W)
 
             batch_size = act_inputs.size(0) # B
 
-            # Initializing zero filled tensors for storing the activity 
-            # and timestamp predictions during decoding 
-            suffix_acts_decoded = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.int64).to(device) # (B, W)
-            suffix_ttne_preds = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.float32).to(device) # (B, W)
+            # Output tensors
+            suffix_acts_decoded = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.int64).to(device)
+            suffix_ttne_preds = torch.full(size=(batch_size, window_size), fill_value=0, dtype=torch.float32).to(device)
+
+            # Initialize KV caches (one per decoder layer)
+            num_layers = len(self.decoder_layers_cached)
+            self_attn_caches_k = [None] * num_layers
+            self_attn_caches_v = [None] * num_layers
+            cross_attn_caches_k = [None] * num_layers
+            cross_attn_caches_v = [None] * num_layers
+
+            # Start with the first suffix token
+            current_act = act_inputs[:, 0:1]           # (B, 1)
+            current_time_ftrs = num_ftrs_suf[:, 0:1, :]  # (B, 1, 2)
 
             for dec_step in range(0, window_size):
-                # Leveraging learned embedding 
-                cat_emb_suf = self.act_emb(act_inputs) # (B, W, self.activity_emb_size)
+                # Embed only the current token
+                cat_emb_suf = self.act_emb(current_act)  # (B, 1, activity_emb_size)
+                target_in = torch.cat((cat_emb_suf, current_time_ftrs), dim=-1)  # (B, 1, dim_init_suffix)
 
-                # Concatenating both
-                target_in = torch.cat((cat_emb_suf, num_ftrs_suf), dim = -1) # (B, W, dim_init_suffix)
+                # Project + positional encoding for this step only
+                target_in = self.input_embeddings_decoder(target_in) * math.sqrt(self.d_model)
+                target_in = target_in + self.positional_encoding.pe[dec_step:dec_step+1, :]
+                target_in = self.positional_encoding.dropout(target_in)
 
-                # Initial embeddings decoder suffix event tokens 
-                target_in = self.positional_encoding(self.input_embeddings_decoder(target_in) * math.sqrt(self.d_model)) # (B, W, d_model)
-
-                # Applying layernorm if specified 
                 if self.layernorm_embeds:
-                    target_in = self.norm_dec_embeds(target_in) # (B, W, d_model)
+                    target_in = self.norm_dec_embeds(target_in)
 
-                # Activating the decoder
+                # Pass through cached decoder layers
                 dec_output = target_in
-                for dec_layer in self.decoder_layers:
-                    dec_output = dec_layer(dec_output, x, padding_mask_input) # (batch_size, window_size)
+                for layer_idx, dec_layer in enumerate(self.decoder_layers_cached):
+                    dec_output, new_self_k, new_self_v, cross_k, cross_v = dec_layer(
+                        dec_output,
+                        x,  # encoder output
+                        padding_mask_input,
+                        self_attn_cache_k=self_attn_caches_k[layer_idx],
+                        self_attn_cache_v=self_attn_caches_v[layer_idx],
+                        cross_attn_cache_k=cross_attn_caches_k[layer_idx],
+                        cross_attn_cache_v=cross_attn_caches_v[layer_idx],
+                    )
+                    self_attn_caches_k[layer_idx] = new_self_k
+                    self_attn_caches_v[layer_idx] = new_self_v
+                    cross_attn_caches_k[layer_idx] = cross_k
+                    cross_attn_caches_v[layer_idx] = cross_v
 
-                # Next activity prediction head: 
-                act_logits = self.fc_out_act(dec_output) # (B, W, self.num_activities)
+                # dec_output: (B, 1, d_model)
 
-                # Time till next event prediction (ttne) head:
-                ttne_pred = self.fc_out_ttne(dec_output) # (B, W, 1)
+                # Activity prediction
+                act_logits = self.fc_out_act(dec_output)  # (B, 1, num_activities)
+                act_outputs = act_logits[:, 0, :]  # (B, num_activities)
 
-                #   Selecting predictions for current decoding step
-                act_outputs = act_logits[:, dec_step, :] # (B, C)
-                ttne_outputs = ttne_pred[:, dec_step, 0] # (B, )
+                # TTNE prediction
+                ttne_pred = self.fc_out_ttne(dec_output)  # (B, 1, 1)
+                ttne_outputs = ttne_pred[:, 0, 0]  # (B,)
+                suffix_ttne_preds[:, dec_step] = ttne_outputs
 
-                # Adding time pred as-is 
-                suffix_ttne_preds[:, dec_step] = ttne_outputs # (B, W)
-
-
-                # Remaining Runtime Predictions and optional outcome 
-                # prediction only performed at the very first decoding 
-                # step 
+                # RRT / outcome only at first decoding step
                 if dec_step == 0:
                     if self.remaining_runtime_head:
-                        rrt_pred = self.fc_out_rrt(dec_output) # (B, W, 1)
-                        # Slicing out first decoding step prediction only
-                        rrt_pred = rrt_pred[:, 0, 0] # (B,)
-
+                        rrt_pred = self.fc_out_rrt(dec_output)[:, 0, 0]  # (B,)
                     if self.outcome_bool:
-                        out_pred = self.fc_out_out(dec_output) # (B, W, 1)
-                        out_pred = self.sigmoid_out(out_pred) # (B, W, 1)
-                        # Slicing out first decoding step prediction only
-                        out_pred = out_pred[:, 0, 0] # (batch_size, )
+                        out_pred = self.sigmoid_out(self.fc_out_out(dec_output))[:, 0, 0]  # (B,)
 
-                # Decoding activity preditions (greedily)
-                #   "Masking padding token"
+                # Greedy decode — mask padding token
                 act_outputs[:, 0] = -1e9
-
-                #   Greedy selection 
-                act_selected = torch.argmax(act_outputs, dim=-1) # (batch_size,), torch.int64
-
-                #   Adding selected activity integers to suffix_acts_decoded
+                act_selected = torch.argmax(act_outputs, dim=-1)  # (B,)
                 suffix_acts_decoded[:, dec_step] = act_selected
 
-                if dec_step < (window_size-1):
+                if dec_step < (window_size - 1):
+                    # Prepare next token
+                    act_suf_updates = torch.clamp(act_selected, max=self.num_activities - 2)
+                    current_act = act_suf_updates.unsqueeze(1)  # (B, 1)
 
-                    # Deriving activity indices pertaining to the 
-                    # selected activities for the derived next suffix 
-                    # event to be fed to the decoder in the next decoding 
-                    # step. 
-                    act_suf_updates = act_selected.clone() # (batch_size, )
-
-                    #   There is no artificially added END token present in the 
-                    #   suffix activity representations, and hence there is no 
-                    #   end token index in the suffix activity representations 
-                    #   on index num_activities-1. Therefore, we clamp 
-                    #   it on num_activities-2. Predictions for already finished 
-                    #   instances will not be taken into account at the end. 
-                    act_suf_updates = torch.clamp(act_suf_updates, max=self.num_activities-2) # (batch_size,) aka (B,)
-
-                    # Updating `act_inputs` for suffix decoder for next decoding step 
-
-                    act_inputs[:, dec_step+1] = act_suf_updates # (B, W)
-
-                    # Deriving TSS and TSP time features for next decoding 
-                    # step based on the TTNE predictions 
-
-                    #   Converting predictions standardized TTNE 
-                    #   back to original scale (seconds)
-                    time_preds_seconds = ttne_outputs*mean_std_ttne[1] + mean_std_ttne[0] # (batch_size,)
-
-                    #   Truncating at zero (no negatives allowed)
+                    # Derive next time features from TTNE prediction
+                    time_preds_seconds = ttne_outputs * mean_std_ttne[1] + mean_std_ttne[0]
                     time_preds_seconds = torch.clamp(time_preds_seconds, min=0)
 
-                    #   Converting standardized TSS feature current decoding 
-                    #   step's suffix event token to original scale (seconds) 
-                    tss_stand = num_ftrs_suf[:, dec_step, 0].clone() # (batch_size,)
-                    tss_seconds = tss_stand*mean_std_tss[1] + mean_std_tss[0] # (batch_size,)
-
-                    #   Clamping at zero again 
+                    tss_stand = current_time_ftrs[:, 0, 0]
+                    tss_seconds = tss_stand * mean_std_tss[1] + mean_std_tss[0]
                     tss_seconds = torch.clamp(tss_seconds, min=0)
 
-                    #   Updating tss in seconds next decoding step based on 
-                    #   converted TTNE predictions 
-                    tss_seconds_new = tss_seconds + time_preds_seconds # (batch_size,)
+                    tss_seconds_new = tss_seconds + time_preds_seconds
+                    tss_stand_new = (tss_seconds_new - mean_std_tss[0]) / mean_std_tss[1]
+                    tsp_stand_new = (time_preds_seconds - mean_std_tsp[0]) / mean_std_tsp[1]
 
-                    #   Converting back to preprocessed scale based on 
-                    #   training mean and std
-                    tss_stand_new = (tss_seconds_new - mean_std_tss[0]) / mean_std_tss[1] # (batch_size,)
+                    current_time_ftrs = torch.stack([tss_stand_new, tsp_stand_new], dim=-1).unsqueeze(1)  # (B, 1, 2)
 
-                    #   TSP: time since previous event next decoding step 
-                    #   is equal to the ttne in seconds, standardized with 
-                    #   the training mean and std of the Suffix TSP feature 
-                    tsp_stand_new = (time_preds_seconds - mean_std_tsp[0]) / mean_std_tsp[1] # (batch_size,)
-
-
-                    #   Concatenating both 
-                    new_suffix_timefeats = torch.cat((tss_stand_new.unsqueeze(-1), tsp_stand_new.unsqueeze(-1)), dim=-1) # (B, 2)
-                    #   Updating next decoding step's time feature
-                    #   tensor for the suffix event tokens 
-                    num_ftrs_suf[:, dec_step+1, :] = new_suffix_timefeats # (B, W, 2)
-            
             if self.only_rrt:
-                # NOTE: rrt_pred already shape (B,). Don't have to subset anymore 
-                # for metric computations 
                 return suffix_acts_decoded, suffix_ttne_preds, rrt_pred
-                # (B, W), (B, W) and (B,)
             elif self.only_out:
                 return suffix_acts_decoded, suffix_ttne_preds, out_pred
-                # (B, W), (B, W) and (B, )
             elif self.both:
                 return suffix_acts_decoded, suffix_ttne_preds, rrt_pred, out_pred
-                # (B, W), (B, W), (B,) and (B, )
             else:
                 return suffix_acts_decoded, suffix_ttne_preds
-                # (B, W), (B, W)

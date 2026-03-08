@@ -183,7 +183,7 @@ def inference_loop(model,
 
 
     # Disable gradient computation and reduce memory consumption.
-    with torch.no_grad():
+    with torch.inference_mode():
         # Initializing global tensors for storing model outputs on CPU
         # The two directly underneath have shape 
         # (num_prefs, window_size) after inference loop

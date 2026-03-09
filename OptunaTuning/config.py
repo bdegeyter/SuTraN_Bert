@@ -155,8 +155,8 @@ FIXED_TRAINING_PARAMS = {
 # ──────────────────────────────────────────────────────────────────────
 
 RANDOM_SEARCH_CONFIG = {
-    "n_trials": 2,
-    "n_epochs": 2,
+    "n_trials": 20,
+    "n_epochs": 15,
     "seed": 42,
 }
 

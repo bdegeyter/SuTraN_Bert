@@ -135,4 +135,3 @@ def construct_BPIC17_datasets():
     # Save test tuples
     test_tensors_path = os.path.join(output_directory, 'test_tensordataset.pt')
     torch.save(test_data, test_tensors_path)
-

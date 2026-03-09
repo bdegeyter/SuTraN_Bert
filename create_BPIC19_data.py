@@ -99,3 +99,5 @@ def construct_BPIC19_datasets():
     test_tensors_path = os.path.join(output_directory, 'test_tensordataset.pt')
     torch.save(test_data, test_tensors_path)
 
+if __name__ == '__main__':
+    construct_BPIC19_datasets()

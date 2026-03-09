@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name="sutran_random_search_dryrun"
-#SBATCH --cluster="wice"
-#SBATCH --partition="gpu_h100"
+#SBATCH --job-name="sutran_train_bpic19"
+#SBATCH --cluster="genius"
+#SBATCH --partition="gpu_v100"
 #SBATCH --gpus-per-node=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --account="lp_lirisnlp"
 #SBATCH --mem=16G
-#SBATCH --time=00:30:00
+#SBATCH --time=24:00:00
 #SBATCH --mail-type="BEGIN,END,FAIL"
-#SBATCH --mail-user="bertrand.dequeker@student.kuleuven.be"
+#SBATCH --mail-user="bert.degeyter@student.kuleuven.be"
 #SBATCH --output="/data/leuven/383/vsc38329/%x.o%A"
 #SBATCH --error="/data/leuven/383/vsc38329/%x.e%A"
 
@@ -23,8 +23,8 @@ conda activate sutran_env
 # Navigate to project
 cd $VSC_SCRATCH/SuTraN_Bert
 
-# DRY RUN: Small n_trials and n_epochs just to verify everything works
-echo "Starting DRY RUN with n_trials=2, n_epochs=2..."
-python -m OptunaTuning.random_search
+# Train full BPIC19 model using original TRAIN_EVAL_SUTRAN_DA
+echo "Starting full training on BPIC_19..."
+python -c "from TRAIN_EVAL_SUTRAN_DA import train_eval; train_eval('BPIC_19')"
 
-echo "DRY RUN COMPLETE"
+echo "Training complete!"

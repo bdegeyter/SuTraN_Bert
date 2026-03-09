@@ -33,7 +33,7 @@ import optuna
 
 from OptunaTuning.config import RANDOM_SEARCH_CONFIG, DATASET_CONFIG
 from OptunaTuning.objective import create_objective
-from OptunaTuning.utils import load_data, generate_lhs_configurations
+from OptunaTuning.utils import load_data, generate_lhs_configurations, save_results_csv
 
 
 def main():
@@ -120,6 +120,9 @@ def main():
         with open(results_path, "wb") as f:
             pickle.dump(results_collector, f)
         print(f"  Trial results saved to {results_path}")
+
+        csv_path = os.path.join(results_dir, "random_search_results.csv")
+        save_results_csv(results_collector, csv_path)
 
     # ── Print summary ──
     print("\n" + "=" * 60)

@@ -388,3 +388,43 @@ def generate_lhs_configurations(n_trials, seed=42):
         configurations.append(params)
 
     return configurations
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Results CSV export
+# ──────────────────────────────────────────────────────────────────────
+
+def save_results_csv(results_collector, save_path):
+    """Flatten per-trial per-epoch results into a CSV file.
+
+    Each row is one (trial, epoch) pair with all hyperparameters and
+    metrics as columns.  Useful for quick inspection in Excel / VS Code
+    without needing to deserialize a pickle.
+
+    Parameters
+    ----------
+    results_collector : dict
+        {trial_number: {"params": {...}, "epochs": [{...}, ...]}}.
+    save_path : str
+        Destination CSV path.
+    """
+    import csv
+
+    # Collect all rows first so we can derive the full set of column names
+    rows = []
+    for trial_num, trial_data in results_collector.items():
+        for epoch_data in trial_data["epochs"]:
+            row = {"trial_id": trial_num, **trial_data["params"], **epoch_data}
+            rows.append(row)
+
+    if not rows:
+        print(f"  No results to save to CSV.")
+        return
+
+    fieldnames = list(rows[0].keys())
+    with open(save_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    print(f"  Results CSV saved to {save_path}")

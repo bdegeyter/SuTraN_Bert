@@ -155,8 +155,8 @@ FIXED_TRAINING_PARAMS = {
 # ──────────────────────────────────────────────────────────────────────
 
 RANDOM_SEARCH_CONFIG = {
-    "n_trials": 20,
-    "n_epochs": 15,
+    "n_trials": 2,
+    "n_epochs": 2,
     "seed": 42,
 }
 
@@ -168,5 +168,5 @@ RANDOM_SEARCH_CONFIG = {
 DATASET_CONFIG = {
     # Name of the preprocessed event log folder.
     # Must match the log_name used in Preprocessing/from_log_to_tensors.py
-    "log_name": "BPIC_17_DR",
+    "log_name": "BPIC_19",
 }

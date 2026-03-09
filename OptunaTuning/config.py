@@ -92,7 +92,7 @@ SEARCH_SPACE = {
     "batch_size": {
         # Training batch size. Larger = faster epochs but more VRAM.
         "type": "categorical",
-        "choices": [64, 128, 256, 512],
+        "choices": [128, 256, 512, 1024],
     },
     "weight_ttne": {
         # Weight of the time-till-next-event MAE loss relative to the

@@ -158,7 +158,7 @@ def train_eval(log_name):
     num_target_tens = 3
 
     dropout = 0.2
-    batch_size = 512
+    batch_size = 128
 
 
     # specifying path results and callbacks 

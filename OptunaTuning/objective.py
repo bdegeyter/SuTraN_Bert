@@ -172,6 +172,8 @@ def create_objective(data, n_epochs, results_collector=None):
             batch_size=params.get("batch_size", 128),
             shuffle=True,
             pin_memory=True,
+            num_workers=4,
+            prefetch_factor=2,
         )
 
         # ── 5. Epoch loop ──

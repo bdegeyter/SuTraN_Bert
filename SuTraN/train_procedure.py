@@ -379,11 +379,13 @@ def train_model(model,
     
     loss_fn = MultiOutputLoss(num_classes, remaining_runtime_head, outcome_bool)
     num_epochs_not_improved = 0
+    import time
     for epoch in range(start_epoch, start_epoch + num_epochs):
         # Setting seed for shuffling of training dataloader's shuffling 
         # of the instances, such that each epoch is shuffled differently, 
         # while still maintaining reproducability. 
         torch.manual_seed(epoch) #+100 without scheduler
+        epoch_start_time = time.time()
         print(" ")
         print("------------------------------------")
         print('EPOCH {}:'.format(epoch))
@@ -546,6 +548,10 @@ def train_model(model,
         if lr_scheduler_present:
             # Update the learning rate
             lr_scheduler.step()
+        
+        # Print epoch timing
+        epoch_time = time.time() - epoch_start_time
+        print(f"Epoch {epoch} completed in {epoch_time:.1f} seconds")
             
         torch.cuda.empty_cache()
 

@@ -6,6 +6,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
 #SBATCH --account="lp_lirisnlp"
 #SBATCH --mem=16G
 #SBATCH --time=24:00:00

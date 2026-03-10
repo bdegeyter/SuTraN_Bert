@@ -7,7 +7,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import os
 import pickle
 
-
+#Epochs as a param (default 200), Batch size increased from 128.
 
 
 def load_checkpoint(model, path_to_checkpoint, train_or_eval, lr):
@@ -74,7 +74,7 @@ def load_checkpoint(model, path_to_checkpoint, train_or_eval, lr):
     return model, optimizer, final_epoch_trained, final_loss
 
 
-def train_eval(log_name):
+def train_eval(log_name, num_epochs=200):
     """Training and automatically evaluating SuTraN
     with the parameters used in the SuTraN paper. 
 
@@ -85,6 +85,8 @@ def train_eval(log_name):
         the same string as the one specified for the `log_name` parameter 
         of the `log_to_tensors()` function in the 
         `Preprocessing\from_log_to_tensors.py` module. 
+    num_epochs : int, default=200
+        Number of epochs to train, unless patience causes early stopping.
     """
     def load_dict(path_name):
         with open(path_name, 'rb') as file:
@@ -158,7 +160,7 @@ def train_eval(log_name):
     num_target_tens = 3
 
     dropout = 0.2
-    batch_size = 128
+    batch_size = 512
 
 
     # specifying path results and callbacks 
@@ -237,7 +239,7 @@ def train_eval(log_name):
     # Training procedure 
     from SuTraN.train_procedure import train_model
     start_epoch = 0
-    num_epochs = 200 
+    # num_epochs passed as parameter (default 200 for full training)
     num_classes = num_activities 
     batch_interval = 800
     train_model(model, 

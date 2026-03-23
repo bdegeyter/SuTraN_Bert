@@ -162,7 +162,39 @@ RANDOM_SEARCH_CONFIG = {
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 5. DATASET CONFIGURATION
+# 5. TPE + HYPERBAND CONFIGURATION
+# ──────────────────────────────────────────────────────────────────────
+# Single-objective TPE with HyperbandPruner.
+#
+# Composite objective (minimized):
+#   composite = MAE_rrt_stand / μ_rrt  +  (1 - DL_similarity) / μ_dl
+#
+# where μ_rrt and μ_dl are the means of each metric from Phase 1
+# (random search), so both terms contribute ~1.0 on average.
+#
+# Individual metrics stored as user_attrs for post-hoc rank-sum
+# model selection (as in the base SuTraN paper).
+#
+# Hyperband settings justified by Phase 1 random search:
+#   - min_resource=5: rank ordering was stable from epoch 5 onward
+#   - max_resource=100: matches realistic full training (early stopping
+#     in the base model consistently triggers at epoch ≤100)
+#   - reduction_factor=3: standard default (Li et al., 2018, JMLR)
+#     produces rungs at epochs 5, 15, 45, 100
+
+TPE_CONFIG = {
+    "n_trials": 150,          # upper bound; also capped by timeout
+    "timeout": 86400,          # 24 hours in seconds
+    "max_epochs": 100,         # Hyperband max_resource
+    "min_resource": 5,         # Hyperband min_resource (grace period)
+    "reduction_factor": 3,     # Hyperband η
+    "seed": 42,
+    "n_startup_trials": 20,    # random exploration before TPE kicks in
+}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 6. DATASET CONFIGURATION
 # ──────────────────────────────────────────────────────────────────────
 
 DATASET_CONFIG = {

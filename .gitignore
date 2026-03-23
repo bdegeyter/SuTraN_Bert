@@ -63,3 +63,6 @@ checkpoint*/
 # Experiment outputs (but keep the scripts)
 experiments/standardization_fix_experiment.md
 experiments/*.csv
+
+# Optuna tuning results (generated, can be large)
+OptunaTuning/results/

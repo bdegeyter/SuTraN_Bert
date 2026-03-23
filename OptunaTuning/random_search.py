@@ -15,7 +15,7 @@ What this does:
      parameter ranges — much better than plain random for high-dim spaces)
   3. Enqueues them into an Optuna study (no pruning — every trial
      runs all epochs so we get full learning curves)
-  4. Runs the study and saves results to OptunaTuning/results/
+  4. Runs the study and saves results to OptunaTuning/results/random_search_{log_name}/
 
 The purpose is to get full learning curves for a diverse set of
 configurations, so you can inspect them and pick a good grace period
@@ -44,7 +44,7 @@ def main():
     seed = RANDOM_SEARCH_CONFIG["seed"]
 
     # ── Output directory ──
-    results_dir = os.path.join("OptunaTuning", "results")
+    results_dir = os.path.join("OptunaTuning", "results", f"random_search_{log_name}")
     os.makedirs(results_dir, exist_ok=True)
 
     # ── Load data (done once, shared across all trials) ──

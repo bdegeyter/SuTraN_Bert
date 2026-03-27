@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --account="lp_lirisnlp"
 #SBATCH --mem=16G
-#SBATCH --time=24:30:00
+#SBATCH --time=20:30:00
 #SBATCH --mail-type="BEGIN,END,FAIL"
 #SBATCH --mail-user="bert.degeyter@student.kuleuven.be"
 #SBATCH --output="/data/leuven/383/vsc38329/%x.o%A"

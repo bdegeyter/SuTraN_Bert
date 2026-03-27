@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-#SBATCH --job-name="create_toy_dataset"
+#SBATCH --job-name="create_bpic17dr_dataset"
 #SBATCH --cluster="genius"
 #SBATCH --partition="gpu_v100"
 #SBATCH --gpus-per-node=1
@@ -26,8 +26,5 @@ cd $VSC_SCRATCH/SuTraN_Bert
 # Create datasets
 echo "Creating BPIC17_DR dataset..."
 python create_BPIC17_DR_data.py
-
-echo "Creating BPIC19 dataset..."
-python create_BPIC19_data.py
 
 echo "Dataset creation complete!"

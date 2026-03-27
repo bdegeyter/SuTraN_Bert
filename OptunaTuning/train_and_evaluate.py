@@ -127,7 +127,7 @@ def train_and_evaluate(params, log_name, n_epochs=100, seed=42,
 
     # Ensure d_ff is derived
     if "d_ff" not in params:
-        params["d_ff"] = params["d_model"] * params["d_ff_multiplier"]
+        params["d_ff"] = int(params["d_model"] * params["d_ff_multiplier"])
 
     # ── Output directory ──
     results_dir = os.path.join("OptunaTuning", "eval_results", log_name, run_name)
@@ -154,16 +154,7 @@ def train_and_evaluate(params, log_name, n_epochs=100, seed=42,
     scheduler = create_scheduler(optimizer, params, n_epochs)
 
     num_classes = data["num_activities"]
-    loss_weights = (
-        1.0,
-        params.get("weight_ttne", 1.0),
-        params.get("weight_rrt", 1.0),
-    )
-    label_smoothing = params.get("label_smoothing", 0.0)
-    loss_fn = MultiOutputLoss(
-        num_classes, remaining_runtime_head, outcome_bool,
-        weights=loss_weights, label_smoothing=label_smoothing,
-    )
+    loss_fn = MultiOutputLoss(num_classes, remaining_runtime_head, outcome_bool)
 
     train_loader = DataLoader(
         data["train_dataset"],
@@ -366,13 +357,8 @@ PAPER_DEFAULTS = {
     "learning_rate": 0.0002,
     "weight_decay": 0.0001,
     "dropout": 0.2,
-    "activation": "relu",
-    "optimizer": "adamw",
     "lr_schedule": "exponential",
-    "batch_size": 512,
-    "weight_ttne": 1.0,
-    "weight_rrt": 1.0,
-    "label_smoothing": 0.0,
+    "layer_norm_position": "post_ln",
 }
 
 

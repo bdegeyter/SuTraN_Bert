@@ -27,20 +27,20 @@ cd $VSC_SCRATCH/SuTraN_Bert
 # Final train + test evaluation using best HPs from TPE.
 # Trains from scratch with fixed HPs, applies early stopping + rank-sum
 # epoch selection, then evaluates on the test set.
-# Results saved to: OptunaTuning/eval_results/BPIC_19/tpe_best/
+# Results saved to: OptunaTuning/eval_results/BPIC_17_DR/tpe_best/
 echo "Starting final train + test evaluation..."
 python -c "
 import pickle
 from OptunaTuning.train_and_evaluate import train_and_evaluate
 
-with open('OptunaTuning/results/tpe_BPIC_19/tpe_best_params.pkl', 'rb') as f:
+with open('OptunaTuning/results/tpe_BPIC_17_DR/tpe_best_params.pkl', 'rb') as f:
     best_params = pickle.load(f)
 
 print('Best params:', best_params)
 
 results = train_and_evaluate(
     params=best_params,
-    log_name='BPIC_19',
+    log_name='BPIC_17_DR',
     n_epochs=200,
     seed=42,
     run_name='tpe_best',

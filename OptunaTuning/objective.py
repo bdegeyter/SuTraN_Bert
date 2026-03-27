@@ -155,21 +155,12 @@ def create_objective(data, n_epochs, results_collector=None):
         optimizer = create_optimizer(model, params)
         scheduler = create_scheduler(optimizer, params, n_epochs)
         num_classes = data["num_activities"]
-        loss_weights = (
-            1.0,  # CE weight is fixed at 1.0 (anchor)
-            params.get("weight_ttne", 1.0),
-            params.get("weight_rrt", 1.0),
-        )
-        label_smoothing = params.get("label_smoothing", 0.0)
-        loss_fn = MultiOutputLoss(
-            num_classes, remaining_runtime_head, outcome_bool,
-            weights=loss_weights, label_smoothing=label_smoothing,
-        )
+        loss_fn = MultiOutputLoss(num_classes, remaining_runtime_head, outcome_bool)
 
         # ── 4. Create training DataLoader ──
         train_loader = DataLoader(
             data["train_dataset"],
-            batch_size=params.get("batch_size", 128),
+            batch_size=512,
             shuffle=True,
             pin_memory=True,
             num_workers=4,

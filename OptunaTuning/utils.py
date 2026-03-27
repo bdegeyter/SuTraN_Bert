@@ -186,7 +186,7 @@ def sample_hyperparams(trial):
             )
 
     # Derived parameter: absolute d_ff from multiplier
-    params["d_ff"] = params["d_model"] * params["d_ff_multiplier"]
+    params["d_ff"] = int(params["d_model"] * params["d_ff_multiplier"])
 
     return params
 
@@ -230,7 +230,7 @@ def create_model(params, data):
         remaining_runtime_head=FIXED_MODEL_PARAMS["remaining_runtime_head"],
         layernorm_embeds=FIXED_MODEL_PARAMS["layernorm_embeds"],
         outcome_bool=FIXED_MODEL_PARAMS["outcome_bool"],
-        activation=params.get("activation", "relu"),
+        pre_ln=params.get("layer_norm_position", "post_ln") == "pre_ln",
     )
 
     model.to(device)
@@ -242,33 +242,24 @@ def create_model(params, data):
 # ──────────────────────────────────────────────────────────────────────
 
 def create_optimizer(model, params):
-    """Create an optimizer with the sampled learning rate and weight decay.
-
-    Supports AdamW (paper default) and NAdam (Adam + Nesterov momentum).
+    """Create an AdamW optimizer with the sampled learning rate and weight decay.
 
     Parameters
     ----------
     model : SuTraN
         The initialized model whose parameters will be optimized.
     params : dict
-        Must contain "learning_rate", "weight_decay", and optionally
-        "optimizer" (defaults to "adamw").
+        Must contain "learning_rate" and "weight_decay".
 
     Returns
     -------
-    optimizer : torch.optim.Optimizer
+    optimizer : torch.optim.AdamW
     """
-    optimizer_name = params.get("optimizer", "adamw")
-    common_kwargs = dict(
+    return torch.optim.AdamW(
         params=model.parameters(),
         lr=params["learning_rate"],
         weight_decay=params["weight_decay"],
     )
-
-    if optimizer_name == "nadam":
-        return torch.optim.NAdam(**common_kwargs)
-    else:  # "adamw" (default)
-        return torch.optim.AdamW(**common_kwargs)
 
 
 # ──────────────────────────────────────────────────────────────────────

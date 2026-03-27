@@ -65,27 +65,33 @@ def compute_normalization_constants(log_name):
     These means are used to normalize the composite scalar so that
     both metrics contribute equally.
 
+    Falls back to mu=1.0 for both metrics if no CSV is found (e.g. when
+    skipping the random search phase). The 1.0 fallback introduces a
+    slight bias toward MAE_rrt (which typically has a higher mean than
+    1 - DL_similarity), but the final rank-sum model selection is
+    completely unaffected since it uses raw per-metric user_attrs.
+
     Parameters
     ----------
     log_name : str
-        Dataset name (e.g. "BPIC_19").
+        Dataset name (e.g. "BPIC_17_DR").
 
     Returns
     -------
     mu_rrt : float
-        Mean of MAE_rrt_stand across all random search epoch rows.
     mu_dl : float
-        Mean of (1 - DL_similarity) across all random search epoch rows.
     """
     csv_path = os.path.join(
         "OptunaTuning", "results", f"random_search_{log_name}",
         "random_search_results.csv",
     )
     if not os.path.exists(csv_path):
-        raise FileNotFoundError(
-            f"Random search results not found at {csv_path}. "
-            f"Run the random search first: python -m OptunaTuning.random_search"
+        print(
+            f"  [INFO] No random search CSV found for '{log_name}'. "
+            f"Using mu_rrt=1.0, mu_dl=1.0 (unnormalized composite). "
+            f"Final rank-sum selection is unaffected."
         )
+        return 1.0, 1.0
 
     rrt_vals, dl_vals = [], []
     with open(csv_path, newline="") as f:
@@ -95,7 +101,8 @@ def compute_normalization_constants(log_name):
             dl_vals.append(1.0 - float(row["DL_similarity"]))
 
     if not rrt_vals:
-        raise ValueError(f"Random search CSV at {csv_path} contains no data rows.")
+        print(f"  [WARN] Random search CSV at {csv_path} is empty. Using mu=1.0 fallback.")
+        return 1.0, 1.0
 
     mu_rrt = sum(rrt_vals) / len(rrt_vals)
     mu_dl = sum(dl_vals) / len(dl_vals)
@@ -245,21 +252,12 @@ def create_tpe_objective(data, max_epochs, mu_rrt, mu_dl, results_collector=None
         optimizer = create_optimizer(model, params)
         scheduler = create_scheduler(optimizer, params, max_epochs)
         num_classes = data["num_activities"]
-        loss_weights = (
-            1.0,
-            params.get("weight_ttne", 1.0),
-            params.get("weight_rrt", 1.0),
-        )
-        label_smoothing = params.get("label_smoothing", 0.0)
-        loss_fn = MultiOutputLoss(
-            num_classes, remaining_runtime_head, outcome_bool,
-            weights=loss_weights, label_smoothing=label_smoothing,
-        )
+        loss_fn = MultiOutputLoss(num_classes, remaining_runtime_head, outcome_bool)
 
         # ── 4. DataLoader ──
         train_loader = DataLoader(
             data["train_dataset"],
-            batch_size=params.get("batch_size", 512),
+            batch_size=512,
             shuffle=True,
             pin_memory=True,
             num_workers=4,

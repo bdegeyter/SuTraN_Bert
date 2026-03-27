@@ -36,7 +36,7 @@ SEARCH_SPACE = {
         # Using a multiplier instead of absolute values keeps d_ff
         # proportional to d_model (which is standard practice).
         "type": "categorical",
-        "choices": [2, 3, 4],
+        "choices": [1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     },
     "num_prefix_encoder_layers": {
         "type": "int",
@@ -70,18 +70,6 @@ SEARCH_SPACE = {
         "low": 0.0,
         "high": 0.5,
     },
-    "activation": {
-        # Activation function for the feed-forward sublayers.
-        # relu = original paper, gelu/silu = popular modern alternatives.
-        "type": "categorical",
-        "choices": ["relu", "gelu", "silu"],
-    },
-    "optimizer": {
-        # AdamW = original paper default. NAdam = Adam + Nesterov momentum,
-        # often converges faster on transformer architectures.
-        "type": "categorical",
-        "choices": ["adamw", "nadam"],
-    },
     "lr_schedule": {
         # exponential = original paper (gamma decay each epoch).
         # cosine      = cosine annealing to 0 over all epochs.
@@ -89,34 +77,12 @@ SEARCH_SPACE = {
         "type": "categorical",
         "choices": ["exponential", "cosine", "reduce_on_plateau"],
     },
-    "batch_size": {
-        # Training batch size. Larger = faster epochs but more VRAM.
+    "layer_norm_position": {
+        # post_ln = original Transformer (Vaswani et al., 2017).
+        # pre_ln  = Pre-LN variant (Xiong et al., 2020); LayerNorm
+        #           before each sublayer, final LayerNorm after last block.
         "type": "categorical",
-        "choices": [128, 256, 512, 1024],
-    },
-    "weight_ttne": {
-        # Weight of the time-till-next-event MAE loss relative to the
-        # cross-entropy activity loss (fixed at 1.0). Log-uniform so
-        # that 0.2→1.0 gets as many samples as 1.0→5.0.
-        "type": "log_float",
-        "low": 0.2,
-        "high": 5.0,
-    },
-    "weight_rrt": {
-        # Weight of the remaining-runtime MAE loss relative to the
-        # cross-entropy activity loss (fixed at 1.0).
-        "type": "log_float",
-        "low": 0.2,
-        "high": 5.0,
-    },
-    "label_smoothing": {
-        # Smoothing factor for the activity suffix CE loss.
-        # 0.0 = hard one-hot targets (paper default).
-        # 0.1 = common starting point in NLP / sequence tasks.
-        # Softens targets to (1-ε, ε/(K-1), ...), reducing overconfidence.
-        "type": "float",
-        "low": 0.0,
-        "high": 0.3,
+        "choices": ["post_ln", "pre_ln"],
     },
 }
 
@@ -184,12 +150,12 @@ RANDOM_SEARCH_CONFIG = {
 
 TPE_CONFIG = {
     "n_trials": 150,          # upper bound; also capped by timeout
-    "timeout": 86400,          # 24 hours in seconds
-    "max_epochs": 100,         # Hyperband max_resource
+    "timeout": 72000,          # 20 hours in seconds
+    "max_epochs": 50,          # Hyperband max_resource
     "min_resource": 5,         # Hyperband min_resource (grace period)
     "reduction_factor": 3,     # Hyperband η
     "seed": 42,
-    "n_startup_trials": 20,    # random exploration before TPE kicks in
+    "n_startup_trials": 5,     # random exploration before TPE kicks in
 }
 
 
@@ -200,5 +166,5 @@ TPE_CONFIG = {
 DATASET_CONFIG = {
     # Name of the preprocessed event log folder.
     # Must match the log_name used in Preprocessing/from_log_to_tensors.py
-    "log_name": "BPIC_19",
+    "log_name": "BPIC_17_DR",
 }

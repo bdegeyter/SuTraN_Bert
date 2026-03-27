@@ -78,7 +78,7 @@ class SuTraN(nn.Module):
                  remaining_runtime_head = True, 
                  layernorm_embeds = True, 
                  outcome_bool = False,
-                 activation = "relu",
+                 pre_ln = False,
                  ):
         """Initialize an instance of SuTraN. The learned 
         activity embedding weight matrix is shared between the encoder 
@@ -181,7 +181,7 @@ class SuTraN(nn.Module):
         self.remaining_runtime_head = remaining_runtime_head
         self.layernorm_embeds = layernorm_embeds
         self.outcome_bool = outcome_bool
-        self.activation = activation
+        self.pre_ln = pre_ln
 
         # Initialize positional encoding layer 
         self.positional_encoding = PositionalEncoding(d_model)
@@ -203,19 +203,23 @@ class SuTraN(nn.Module):
         # Initial input embedding prefix events (encoder)
         self.input_embeddings_encoder = nn.Linear(self.dim_init_prefix, self.d_model)
 
-        # Dimensionality of initial decoder suffix event tokens after the suffix categoricals are fed to the dedicated entity embeddings and everything, 
-        # including the numericals are concatenated
+        # Dimensionality of initial decoder suffix event tokens
         self.dim_init_suffix = self.activity_emb_size + 2
 
-        # Initial input embedding prefix events (encoder)
+        # Initial input embedding decoder (suffix event tokens)
         self.input_embeddings_decoder = nn.Linear(self.dim_init_suffix, self.d_model)
 
         # Initializing the num_prefix_encoder_layers encoder layers 
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, pre_ln=pre_ln) for _ in range(self.num_prefix_encoder_layers)])
         # Initializing the num_decoder_layers decoder layers (for training with teacher forcing)
-        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, pre_ln=pre_ln) for _ in range(self.num_decoder_layers)])
         # Initializing cached decoder layers for fast autoregressive inference
-        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout, pre_ln=pre_ln) for _ in range(self.num_decoder_layers)])
+
+        # Final layer norm for pre-LN (last sublayer output is un-normalized)
+        if pre_ln:
+            self.final_norm_encoder = nn.LayerNorm(d_model)
+            self.final_norm_decoder = nn.LayerNorm(d_model)
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)
@@ -363,6 +367,8 @@ class SuTraN(nn.Module):
         # Updating the prefix event embeddings with the encoder blocks 
         for enc_layer in self.encoder_layers:
             x = enc_layer(x, padding_mask_input)
+        if self.pre_ln:
+            x = self.final_norm_encoder(x)
 
         # ---------------------------
 
@@ -385,6 +391,8 @@ class SuTraN(nn.Module):
             dec_output = target_in
             for dec_layer in self.decoder_layers:
                 dec_output = dec_layer(dec_output, x, padding_mask_input) # (batch_size, window_size)
+            if self.pre_ln:
+                dec_output = self.final_norm_decoder(dec_output)
 
             # Next activity prediction head: 
             act_probs = self.fc_out_act(dec_output) # (batch_size, window_size, self.num_activities)
@@ -474,6 +482,8 @@ class SuTraN(nn.Module):
 
                 # dec_output: (B, 1, d_model)
 
+                if self.pre_ln:
+                    dec_output = self.final_norm_decoder(dec_output)
                 # Activity prediction
                 act_logits = self.fc_out_act(dec_output)  # (B, 1, num_activities)
                 act_outputs = act_logits[:, 0, :]  # (B, num_activities)
@@ -541,7 +551,6 @@ class SuTraN_no_context(nn.Module):
                  remaining_runtime_head = True, 
                  layernorm_embeds = True, 
                  outcome_bool = False,
-                 activation = "relu",
                  ):
         """Initialize an instance of SuTraN. The learned 
         activity embedding weight matrix is shared between the encoder 
@@ -599,9 +608,6 @@ class SuTraN_no_context(nn.Module):
             procedure, as well as with the preprocessing pipeline that 
             produces the labels. See Notes for further remarks 
             regarding the `outcome_bool` parameter. 
-        activation : str, optional
-            Activation function for the feed-forward sublayers. One of 
-            ``"relu"``, ``"gelu"``, or ``"silu"``. By default ``"relu"``.
 
         Notes
         -----
@@ -629,7 +635,6 @@ class SuTraN_no_context(nn.Module):
         self.remaining_runtime_head = remaining_runtime_head
         self.layernorm_embeds = layernorm_embeds
         self.outcome_bool = outcome_bool
-        self.activation = activation
 
         # Initialize positional encoding layer 
         self.positional_encoding = PositionalEncoding(d_model)
@@ -657,11 +662,11 @@ class SuTraN_no_context(nn.Module):
         self.input_embeddings_decoder = nn.Linear(self.dim_init_suffix, self.d_model)
 
         # Initializing the num_prefix_encoder_layers encoder layers 
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_prefix_encoder_layers)])
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_prefix_encoder_layers)])
         # Initializing the num_decoder_layers decoder layers (for training with teacher forcing)
-        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(self.num_decoder_layers)])
         # Initializing cached decoder layers for fast autoregressive inference
-        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout, activation) for _ in range(self.num_decoder_layers)])
+        self.decoder_layers_cached = nn.ModuleList([DecoderLayerCached(d_model, num_heads, d_ff, dropout) for _ in range(self.num_decoder_layers)])
 
         # Initializing the additional activity output layer
         self.fc_out_act = nn.Linear(self.d_model, self.num_activities) # (batch_size, window_size, num_activities)
@@ -807,7 +812,6 @@ class SuTraN_no_context(nn.Module):
         # ---------------------------
 
         if self.training: # Teacher forcing (for now)
-
 
             # Using the activity embedding layer shared with the encoder 
             cat_emb_suf = self.act_emb(inputs[3]) # (batch_size, window_size, embed_sz_categ[0])
